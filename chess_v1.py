@@ -48,12 +48,12 @@ piece_symbols = {
 }
 piece_images = {}
 piece_moved = {
-    'white_king' : None,
-    'white_rook_a' : None,
-    'white_rook_h' : None,
-    'black_king' : None,
-    'black_rook_a' : None,
-    'black_rook_h' : None,
+    'white_king' : False,
+    'white_rook_a' : False,
+    'white_rook_h' : False,
+    'black_king' : False,
+    'black_rook_a' : False,
+    'black_rook_h' : False,
 }
 en_passant_target = None
 promotion_pending = None
@@ -621,7 +621,7 @@ def execute_castling(king_row, king_col, target_col):
         board[king_row][3] = board[king_row][0]  # Move rook
         board[king_row][4] = '.'
         board[king_row][0] = '.'
-#===========================================================================EXECUTE CASATLING===========================================================================
+#===========================================================================PROMOTE PAWN===========================================================================
 def promote_pawn(row , col , piece_type):
     is_white = board[row][col].isupper()
     board[row][col] = piece_type.upper() if is_white else piece_type.lower()
@@ -792,12 +792,11 @@ images_loaded = load_images()
 while run:
     
     for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            run = False
-            continue
-
-        # If promotion is pending, only handle promotion clicks (allow quit)
+        
         if promotion_pending:
+            if event.type == pygame.QUIT:
+                run = False
+                continue
             if event.type == pygame.MOUSEBUTTONDOWN:
                 x, y = event.pos
                 for i, p in enumerate(['Q', 'R', 'B', 'N']):
@@ -857,19 +856,7 @@ while run:
                                 switch_turn()
                         else:
                             print("Invalid move! That's not a legal move.")
-
-                # file_letter = Files[col]
-                # rank_number = 8 - row
-                # chess_notation = f"{file_letter}{rank_number}"
-
-                # if piece == '.':
-                #     print(f"Clicked: {chess_notation} (empty square)")
-                # else:
-                #     piece_name = get_piece_name(piece)
-                #     color = "White" if piece.isupper() else "Black"
-                #     print(f"Clicked: {chess_notation} - {color} {piece_name}")
-    
-    # screen.fill((255 , 255 , 255))
+   
     draw_board()
     draw_pieces()
     draw_info()
