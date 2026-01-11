@@ -933,6 +933,38 @@ def evaluate_board():
                     score -= value
     
     return score
+"""===========================================================================SCORE MOVE==========================================================================="""
+def score_move(from_square , to_square):
+    from_row, from_col = from_square
+    to_row, to_col = to_square
+    
+    piece = board[from_row][from_col]
+    captured = board[to_row][to_col]
+    
+    score = 0
+
+    if captured != '.':
+        piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+        captured_value = piece_values.get(captured.upper(), 0)
+        piece_value = piece_values.get(piece.upper(), 0)
+        score = 10 * captured_value - piece_value
+
+    if piece.upper() == 'P':
+        if (piece == 'P' and to_row == 0) or (piece == 'p' and to_row == 7):
+            score += 50
+    if 2 <= to_row <= 5 and 2 <= to_col <= 5:
+        score += 1
+    return score
+"""===========================================================================ORDERED MOVE==========================================================================="""
+def get_ordered_move(color):
+    moves = get_all_legal_moves(color)
+
+    move_scores = []
+    for from_sq, to_sq in moves:
+        score = score_move(from_sq, to_sq)
+        move_scores.append((score, from_sq, to_sq))
+    move_scores.sort(reverse=True , key=lambda x: x[0])
+    return [(from_sq, to_sq) for _, from_sq, to_sq in move_scores]
 """===========================================================================RANDOM MOVE AI==========================================================================="""
 def get_random_move(color):
     """Get a random legal move for the given color."""
@@ -1020,7 +1052,7 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
     if depth == 0:
         return evaluate_board()
     
-    legal_moves = get_all_legal_moves('white' if is_maximizing else 'black')
+    legal_moves = get_ordered_move('white' if is_maximizing else 'black')
     
     if not legal_moves:
         # Checkmate or stalemate
