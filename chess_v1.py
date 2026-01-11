@@ -2,6 +2,7 @@ import pygame
 import sys
 import copy
 import os
+import random
 #===========================================================================INTIALIZING PYGAME===========================================================================
 pygame.init()
 #===========================================================================CONSTANTS===========================================================================
@@ -55,6 +56,7 @@ piece_moved = {
     'black_rook_a' : False,
     'black_rook_h' : False,
 }
+captured_pieces = {'white': [], 'black': []}
 en_passant_target = None
 promotion_pending = None
 #===========================================================================FILES===========================================================================
@@ -287,6 +289,115 @@ def draw_promotion_ui():
             text = large_font.render(symbol, True, White if is_white else Black)
             text_rect = text.get_rect(center=button_rect.center)
             screen.blit(text, text_rect)
+"""===========================================================================DRAW CO-ORDINATES==========================================================================="""
+def draw_coordinates():
+    """Draw rank and file labels."""
+    coord_font = pygame.font.Font(None, 24)
+    
+    # Files (a-h)
+    for col in range(8):
+        x = col * square_size + square_size - 10
+        y = 8 * square_size + 50
+        text = coord_font.render(Files[col], True, White)
+        screen.blit(text, (x, y))
+    
+    # Ranks (8-1)
+    for row in range(8):
+        x = 5
+        y = row * square_size + 45
+        rank = str(8 - row)
+        text = coord_font.render(rank, True, White)
+        screen.blit(text, (x, y))
+"""===========================================================================DRAW INFO PANEL==========================================================================="""
+def draw_info_panel():
+    """Draw comprehensive game info."""
+    panel_width = 200
+    panel_x = width
+    
+    # Extend window to fit panel
+    # (Or use overlay)
+    
+    info_y = 10
+    spacing = 30
+    
+    # Current turn
+    turn_text = f"Turn: {current_turn.capitalize()}"
+    surface = small_font.render(turn_text, True, White)
+    screen.blit(surface, (panel_x + 10, info_y))
+    info_y += spacing
+    
+    # Move count
+    move_text = f"Moves: {len(move_history)}"
+    surface = small_font.render(move_text, True, White)
+    screen.blit(surface, (panel_x + 10, info_y))
+    info_y += spacing
+    
+    # Material count
+    white_material = count_material('white')
+    black_material = count_material('black')
+    advantage = white_material - black_material
+    
+    if advantage > 0:
+        adv_text = f"White +{advantage}"
+    elif advantage < 0:
+        adv_text = f"Black +{-advantage}"
+    else:
+        adv_text = "Equal"
+    
+    surface = small_font.render(adv_text, True, White)
+    screen.blit(surface, (panel_x + 10, info_y))
+    info_y += spacing
+    
+    # Last move
+    if move_history:
+        last_move = move_history[-1]
+        move_text = f"Last: {last_move}"
+        surface = small_font.render(move_text, True, White)
+        screen.blit(surface, (panel_x + 10, info_y))
+"""===========================================================================DRAW CAPTURED PIECES==========================================================================="""
+def draw_captured_pieces():
+    """Show captured pieces."""
+    y_offset = height - 60
+    
+    # Black's captured pieces
+    x = 10
+    for piece in captured_pieces['white']:
+        if images_loaded:
+            small_img = pygame.transform.scale(piece_images[piece], (30, 30))
+            screen.blit(small_img, (x, y_offset))
+        else:
+            symbol = piece_symbols[piece]
+            text = small_font.render(symbol, True, White)
+            screen.blit(text, (x, y_offset))
+        x += 35
+    
+    # White's captured pieces  
+    y_offset -= 40
+    x = 10
+    for piece in captured_pieces['black']:
+        if images_loaded:
+            small_img = pygame.transform.scale(piece_images[piece], (30, 30))
+            screen.blit(small_img, (x, y_offset))
+        else:
+            symbol = piece_symbols[piece]
+            text = small_font.render(symbol, True, Black)
+            screen.blit(text, (x, y_offset))
+        x += 35
+"""===========================================================================COUNT MATERIAL==========================================================================="""
+def count_material(color):
+    """Count material value for a color."""
+    values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
+    total = 0
+    
+    for row in board:
+        for piece in row:
+            if piece == '.':
+                continue
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == color:
+                total += values.get(piece.upper(), 0)
+    
+    return total
 """===========================================================================GET PIECE NAME==========================================================================="""
 def get_piece_name(piece):
     
@@ -354,7 +465,6 @@ def move_piece(from_square , to_square):
         board[from_row][from_col] = '.'
         board[from_row][to_col] = '.'  
     else:
-        # Normal move
         board[to_row][to_col] = piece
         board[from_row][from_col] = '.'
     
@@ -372,9 +482,12 @@ def move_piece(from_square , to_square):
     from_notation = f"{Files[from_col]}{8 - from_row}"
     to_notation = f"{Files[to_col]}{8 - to_row}"
     if captured_piece != '.':
+        if is_white_piece(captured_piece):
+            captured_pieces['white'].append(captured_piece)
         move_str = f"{from_notation} x {to_notation}"
         print(f"Capture! {get_piece_name(piece)} takes {get_piece_name(captured_piece)}")
     else:
+        captured_pieces['black'].append(captured_piece)
         move_str  = f"{from_notation} → {to_notation}"
     
     move_history.append(move_str)
@@ -534,7 +647,7 @@ def get_queen_moves(row , col , piece):
     
     return moves
 #===========================================================================KING MOVES===========================================================================
-def get_king_moves(row , col , piece):
+def get_king_moves(row , col , piece, include_castling=True):
     moves = []
     player_color = 'white' if piece.isupper() else 'black'
     directions = [
@@ -552,10 +665,11 @@ def get_king_moves(row , col , piece):
             
             if target == '.' or is_enemy_piece(target, player_color):
                 moves.append((new_row, new_col))
-    if can_castle_kingside(player_color):
-        moves.append((row , 6))
-    if can_castle_queenside(player_color):
-        moves.append((row , 2))
+    if include_castling:
+        if can_castle_kingside(player_color):
+            moves.append((row , 6))
+        if can_castle_queenside(player_color):
+            moves.append((row , 2))
     return moves
 #===========================================================================CASTLE KINGSIDE===========================================================================
 def can_castle_kingside(color):
@@ -654,7 +768,11 @@ def is_square_attacked(row , col , by_color):
             if piece_color != by_color:
                 continue
 
-            moves = get_piece_moves(r,c)
+            # For kings, don't include castling moves when checking if square is attacked
+            if piece.upper() == 'K':
+                moves = get_king_moves(r, c, piece, include_castling=False)
+            else:
+                moves = get_piece_moves(r,c)
             if(row,col) in moves:
                 return True
     return False
@@ -710,7 +828,8 @@ def get_all_legal_moves(color):
             piece_color = 'white' if piece.isupper() else 'black'
             if piece_color == color:
                 moves = get_valid_moves(row, col)
-                all_moves.extend(moves)
+                for move in moves:
+                    all_moves.append(((row, col), move))
     
     return all_moves
 """===========================================================================CHECK GAME OVER==========================================================================="""
@@ -781,6 +900,226 @@ def switch_turn():
         print(f"{current_turn.capitalize()}'s turn")
     
     print()
+"""===========================================================================EVALUATE POSITION==========================================================================="""
+def evaluate_position():
+    score = 0
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    for row in board:
+        for piece in row:
+            if piece in piece_values:
+                score += piece_values[piece]  # White piece
+            elif piece.lower() in piece_values:
+                score -= piece_values[piece.lower()]  # Black piece
+    
+    return score
+"""===========================================================================EVALUATE POSITION==========================================================================="""
+def evaluate_board():
+    """Evaluate current position. Positive = good for white."""
+    score = 0
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
+    
+    for row in board:
+        for piece in row:
+            if piece == '.':
+                continue
+            
+            piece_type = piece.upper()
+            if piece_type in piece_values:
+                value = piece_values[piece_type]
+                if piece.isupper():  # White
+                    score += value
+                else:  # Black
+                    score -= value
+    
+    return score
+"""===========================================================================RANDOM MOVE AI==========================================================================="""
+def get_random_move(color):
+    """Get a random legal move for the given color."""
+    all_moves = []
+    
+    # Get all pieces of this color
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece == '.':
+                continue
+            
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == color:
+                moves = get_valid_moves(row, col)
+                for move in moves:
+                    all_moves.append(((row, col), move))
+    
+    if not all_moves:
+        return None  # No legal moves (checkmate/stalemate)
+    
+    return random.choice(all_moves)
+"""===========================================================================MATERIAL MOVE AI==========================================================================="""
+def get_best_move_material(color):
+    """Get move that results in best material balance."""
+    global board
+    all_moves = []
+    
+    # Get all legal moves with their resulting positions
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece == '.':
+                continue
+            
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == color:
+                moves = get_valid_moves(r, c)
+                for move in moves:
+                    all_moves.append(((r, c), move))
+    
+    if not all_moves:
+        return None
+    
+    best_move = None
+    best_score = float('-inf') if color == 'white' else float('inf')
+    
+    for from_square, to_square in all_moves:
+        # Simulate move
+        original_board = copy.deepcopy(board)
+        
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        board[to_row][to_col] = board[from_row][from_col]
+        board[from_row][from_col] = '.'
+        
+        # Evaluate
+        score = evaluate_board()
+        
+        # Restore board
+        board = copy.deepcopy(original_board)
+        
+        # Check if best
+        if color == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = (from_square, to_square)
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = (from_square, to_square)
+    
+    return best_move
+"""===========================================================================MINIMAX==========================================================================="""
+def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
+    """
+    Minimax with alpha-beta pruning.
+    
+    depth: How many moves to look ahead
+    is_maximizing: True if white's turn, False if black's
+    alpha/beta: For pruning (explained in Lesson 9)
+    """
+    global board
+    # Base case: reached max depth or game over
+    if depth == 0:
+        return evaluate_board()
+    
+    legal_moves = get_all_legal_moves('white' if is_maximizing else 'black')
+    
+    if not legal_moves:
+        # Checkmate or stalemate
+        if is_in_check('white' if is_maximizing else 'black'):
+            return -10000 if is_maximizing else 10000  # Checkmate
+        return 0  # Stalemate
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for from_square, to_square in legal_moves:
+            # Make move
+            original_board = copy.deepcopy(board)
+            from_row, from_col = from_square
+            to_row, to_col = to_square
+            board[to_row][to_col] = board[from_row][from_col]
+            board[from_row][from_col] = '.'
+            
+            # Recurse
+            eval = minimax(depth - 1, False, alpha, beta)
+            
+            # Undo move
+            board = copy.deepcopy(original_board)
+            
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # Pruning
+        
+        return max_eval
+    
+    else:
+        min_eval = float('inf')
+        for from_square, to_square in legal_moves:
+            # Make move
+            original_board = copy.deepcopy(board)
+            from_row, from_col = from_square
+            to_row, to_col = to_square
+            board[to_row][to_col] = board[from_row][from_col]
+            board[from_row][from_col] = '.'
+            
+            # Recurse
+            eval = minimax(depth - 1, True, alpha, beta)
+            
+            # Undo move
+            board = copy.deepcopy(original_board)
+            
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # Pruning
+        
+        return min_eval
+"""===========================================================================MINIMAX MOVE AI==========================================================================="""
+def get_best_move_minimax(color, depth=3):
+    """Get best move using minimax algorithm."""
+    global board
+    all_moves = []
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece == '.':
+                continue
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == color:
+                moves = get_valid_moves(row, col)
+                for move in moves:
+                    all_moves.append(((row, col), move))
+    
+    if not all_moves:
+        return None
+    
+    best_move = None
+    best_score = float('-inf') if color == 'white' else float('inf')
+    
+    for from_square, to_square in all_moves:
+        # Make move
+        original_board = copy.deepcopy(board)
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        board[to_row][to_col] = board[from_row][from_col]
+        board[from_row][from_col] = '.'
+        
+        # Evaluate using minimax
+        score = minimax(depth - 1, color == 'black')
+        
+        # Undo
+        board = copy.deepcopy(original_board)
+        
+        # Check if best
+        if color == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = (from_square, to_square)
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = (from_square, to_square)
+    
+    return best_move
 #===========================================================================TERMINAL BOARD===========================================================================
 print("GAME STARTED")
 for row in board:
@@ -792,7 +1131,9 @@ images_loaded = load_images()
 while run:
     
     for event in pygame.event.get():
-        
+        if event.type == pygame.QUIT:
+            run = False
+            continue
         if promotion_pending:
             if event.type == pygame.QUIT:
                 run = False
@@ -856,7 +1197,15 @@ while run:
                                 switch_turn()
                         else:
                             print("Invalid move! That's not a legal move.")
-   
+    
+    if current_turn == 'black':  # AI's turn
+        move = get_best_move_minimax('black')
+        if move:
+            from_square, to_square = move
+            move_piece(from_square, to_square)
+            if not promotion_pending:
+                switch_turn()
+
     draw_board()
     draw_pieces()
     draw_info()
