@@ -3,13 +3,23 @@ import sys
 import copy
 import os
 import random
+import time
 #===========================================================================INTIALIZING PYGAME===========================================================================
 pygame.init()
 #===========================================================================CONSTANTS===========================================================================
-width = 640
+board_width = 640
+panel_width = 250
+width = board_width + panel_width  # Total: 890px
 height = 640
-square_size = width // 8
+square_size = board_width // 8
 #===========================================================================COLORS===========================================================================
+Panel_bg = (45, 45, 45)
+Panel_border = (80, 80, 80)
+Panel_text = (220, 220, 220)
+Eval_white = (240, 240, 240)
+Eval_black = (60, 60, 60)
+Graph_line = (100, 200, 255)  # Blue line for graph
+Grid_line = (70, 70, 70)
 Light_square = (240 , 217 , 181)
 Dark_square = (181 , 136 , 99)
 White = (255 , 255 , 255)
@@ -67,6 +77,7 @@ pygame.display.set_caption("CHESS GAME")
 font = pygame.font.Font(None , 60)
 small_font = pygame.font.Font(None , 30)
 large_font = pygame.font.Font(None , 80)
+tiny_font = pygame.font.Font(None, 20)
 #===========================================================================GAME STATE===========================================================================
 selected_square = None
 current_turn = 'white'
@@ -76,6 +87,9 @@ game_over = False
 game_result = ""
 animating_move = None
 animation_duration = 0.5
+evaluation_history = []  
+current_evaluation = 0 
+transposition_table = {}
 """===========================================================================DRAW BORAD==========================================================================="""
 def draw_board():
     for row in range(8):
@@ -308,29 +322,247 @@ def draw_coordinates():
         rank = str(8 - row)
         text = coord_font.render(rank, True, White)
         screen.blit(text, (x, y))
-"""===========================================================================DRAW INFO PANEL==========================================================================="""
-def draw_info_panel():
-    """Draw comprehensive game info."""
-    panel_width = 200
-    panel_x = width
+"""===========================================================================DRAW EVALUATION BAR==========================================================================="""
+def draw_evaluation_bar():
+    """Draw vertical evaluation bar showing advantage"""
+    bar_x = board_width + 20
+    bar_y = 50
+    bar_width = 30
+    bar_height = 200
     
-    # Extend window to fit panel
-    # (Or use overlay)
+    # Background (border)
+    pygame.draw.rect(screen, Panel_border, (bar_x, bar_y, bar_width, bar_height), 2)
     
-    info_y = 10
-    spacing = 30
+    # Calculate fill based on evaluation (-10 to +10 scale)
+    # Clamp evaluation to reasonable range
+    clamped_eval = max(-10, min(10, current_evaluation))
     
-    # Current turn
+    # Convert to percentage (0 = black winning, 0.5 = equal, 1 = white winning)
+    eval_percentage = (clamped_eval + 10) / 20  # Maps -10 to +10 into 0 to 1
+    
+    # Calculate heights
+    white_height = int(bar_height * eval_percentage)
+    black_height = bar_height - white_height
+    
+    # Draw white advantage (bottom to middle)
+    if white_height > 0:
+        white_rect = pygame.Rect(bar_x + 2, bar_y + black_height, bar_width - 4, white_height)
+        pygame.draw.rect(screen, Eval_white, white_rect)
+    
+    # Draw black advantage (top to middle)
+    if black_height > 0:
+        black_rect = pygame.Rect(bar_x + 2, bar_y, bar_width - 4, black_height)
+        pygame.draw.rect(screen, Eval_black, black_rect)
+    
+    # Draw center line (equality)
+    center_y = bar_y + bar_height // 2
+    pygame.draw.line(screen, White, (bar_x, center_y), (bar_x + bar_width, center_y), 1)
+    
+    # Draw numeric evaluation
+    if current_evaluation > 0:
+        eval_text = f"+{current_evaluation:.1f}"
+        text_color = White
+    elif current_evaluation < 0:
+        eval_text = f"{current_evaluation:.1f}"
+        text_color = White
+    else:
+        eval_text = "0.0"
+        text_color = White
+    
+    eval_surface = small_font.render(eval_text, True, text_color)
+    eval_rect = eval_surface.get_rect(center=(bar_x + bar_width // 2, bar_y + bar_height + 20))
+    screen.blit(eval_surface, eval_rect)
+"""===========================================================================DRAW EVALUATION GRAPH==========================================================================="""
+def draw_evaluation_graph():
+    """Draw line graph showing evaluation over time"""
+    graph_x = board_width + 70
+    graph_y = 50
+    graph_width = 160
+    graph_height = 120
+    
+    # Background
+    graph_rect = pygame.Rect(graph_x, graph_y, graph_width, graph_height)
+    pygame.draw.rect(screen, (30, 30, 30), graph_rect)
+    pygame.draw.rect(screen, Panel_border, graph_rect, 1)
+    
+    # Title
+    title_surface = tiny_font.render("Evaluation", True, Panel_text)
+    screen.blit(title_surface, (graph_x + 5, graph_y - 20))
+    
+    # Draw center line (0.0 evaluation)
+    center_y = graph_y + graph_height // 2
+    pygame.draw.line(screen, Grid_line, (graph_x, center_y), (graph_x + graph_width, center_y), 1)
+    
+    # Draw grid lines
+    for i in range(1, 4):
+        grid_y = graph_y + (graph_height // 4) * i
+        pygame.draw.line(screen, Grid_line, (graph_x, grid_y), (graph_x + graph_width, grid_y), 1)
+    
+    # Draw evaluation line
+    if len(evaluation_history) > 1:
+        # Show last 20 moves
+        display_evals = evaluation_history[-20:]
+        
+        points = []
+        for i, eval_val in enumerate(display_evals):
+            # X position
+            x = graph_x + int((i / max(1, len(display_evals) - 1)) * graph_width)
+            
+            # Y position (clamp eval to -5 to +5 for display)
+            clamped = max(-5, min(5, eval_val))
+            y_ratio = (clamped + 5) / 10  # Map -5 to +5 into 0 to 1
+            y = graph_y + graph_height - int(y_ratio * graph_height)
+            
+            points.append((x, y))
+        
+        # Draw the line
+        if len(points) > 1:
+            pygame.draw.lines(screen, Graph_line, False, points, 2)
+            
+            # Draw dots at each point
+            for point in points:
+                pygame.draw.circle(screen, Graph_line, point, 3)
+    
+    # Labels
+    plus_label = tiny_font.render("+5", True, Panel_text)
+    screen.blit(plus_label, (graph_x + graph_width + 5, graph_y))
+    
+    zero_label = tiny_font.render("0", True, Panel_text)
+    screen.blit(zero_label, (graph_x + graph_width + 5, center_y - 8))
+    
+    minus_label = tiny_font.render("-5", True, Panel_text)
+    screen.blit(minus_label, (graph_x + graph_width + 5, graph_y + graph_height - 10))
+"""===========================================================================DRAW MOVE HISTORY==========================================================================="""
+def draw_move_history():
+    """Draw scrollable move history"""
+    hist_x = board_width + 20
+    hist_y = 190
+    hist_width = 210
+    hist_height = 200
+    
+    # Background
+    hist_rect = pygame.Rect(hist_x, hist_y, hist_width, hist_height)
+    pygame.draw.rect(screen, (30, 30, 30), hist_rect)
+    pygame.draw.rect(screen, Panel_border, hist_rect, 1)
+    
+    # Title
+    title_surface = small_font.render("Moves", True, White)
+    screen.blit(title_surface, (hist_x + 5, hist_y - 25))
+    
+    if not move_history:
+        no_moves = tiny_font.render("No moves yet", True, Panel_text)
+        screen.blit(no_moves, (hist_x + 10, hist_y + 10))
+        return
+    
+    # Draw moves (show last 14 moves)
+    y_offset = hist_y + 10
+    move_height = 25
+    
+    # Calculate which moves to show (last 14)
+    start_idx = max(0, len(move_history) - 28)  # 14 pairs = 28 moves
+    
+    for i in range(start_idx, len(move_history), 2):
+        if y_offset > hist_y + hist_height - move_height:
+            break
+        
+        move_num = (i // 2) + 1
+        white_move = move_history[i]
+        black_move = move_history[i + 1] if i + 1 < len(move_history) else ""
+        
+        # Highlight last move
+        if i >= len(move_history) - 2:
+            highlight_rect = pygame.Rect(hist_x + 5, y_offset - 2, hist_width - 10, move_height - 2)
+            pygame.draw.rect(screen, (60, 60, 80), highlight_rect)
+        
+        # Move number
+        num_surface = tiny_font.render(f"{move_num}.", True, Panel_text)
+        screen.blit(num_surface, (hist_x + 10, y_offset))
+        
+        # White's move
+        white_surface = tiny_font.render(white_move, True, White)
+        screen.blit(white_surface, (hist_x + 40, y_offset))
+        
+        # Black's move
+        if black_move:
+            black_surface = tiny_font.render(black_move, True, (180, 180, 180))
+            screen.blit(black_surface, (hist_x + 130, y_offset))
+        
+        y_offset += move_height
+"""===========================================================================DRAW CAPTURED PIECES PANEL==========================================================================="""
+def draw_captured_pieces_panel():
+    """Draw captured pieces in panel"""
+    cap_x = board_width + 20
+    cap_y = 410
+    cap_width = 210
+    cap_height = 100
+    
+    # Background
+    cap_rect = pygame.Rect(cap_x, cap_y, cap_width, cap_height)
+    pygame.draw.rect(screen, (30, 30, 30), cap_rect)
+    pygame.draw.rect(screen, Panel_border, cap_rect, 1)
+    
+    # Title
+    title_surface = small_font.render("Captured", True, White)
+    screen.blit(title_surface, (cap_x + 5, cap_y - 25))
+    
+    # White's captured pieces (pieces black captured)
+    white_label = tiny_font.render("Black captured:", True, Panel_text)
+    screen.blit(white_label, (cap_x + 10, cap_y + 10))
+    
+    x_offset = cap_x + 10
+    y_offset = cap_y + 30
+    for piece in captured_pieces['white']:
+        if piece == '.':
+            continue
+        if images_loaded and piece in piece_images:
+            small_img = pygame.transform.scale(piece_images[piece], (25, 25))
+            screen.blit(small_img, (x_offset, y_offset))
+        else:
+            symbol = piece_symbols.get(piece, '')
+            if symbol:
+                text = tiny_font.render(symbol, True, White)
+                screen.blit(text, (x_offset, y_offset))
+        x_offset += 28
+        if x_offset > cap_x + cap_width - 30:
+            break
+    
+    # Black's captured pieces (pieces white captured)
+    black_label = tiny_font.render("White captured:", True, Panel_text)
+    screen.blit(black_label, (cap_x + 10, cap_y + 55))
+    
+    x_offset = cap_x + 10
+    y_offset = cap_y + 75
+    for piece in captured_pieces['black']:
+        if piece == '.':
+            continue
+        if images_loaded and piece in piece_images:
+            small_img = pygame.transform.scale(piece_images[piece], (25, 25))
+            screen.blit(small_img, (x_offset, y_offset))
+        else:
+            symbol = piece_symbols.get(piece, '')
+            if symbol:
+                text = tiny_font.render(symbol, True, Black)
+                screen.blit(text, (x_offset, y_offset))
+        x_offset += 28
+        if x_offset > cap_x + cap_width - 30:
+            break
+"""===========================================================================DRAW GAME INFO PANEL==========================================================================="""
+def draw_game_info_panel():
+    """Draw current game status"""
+    info_x = board_width + 20
+    info_y = 530
+    info_width = 210
+    
+    # Turn indicator
     turn_text = f"Turn: {current_turn.capitalize()}"
-    surface = small_font.render(turn_text, True, White)
-    screen.blit(surface, (panel_x + 10, info_y))
-    info_y += spacing
+    if is_in_check(current_turn):
+        turn_text += " - CHECK!"
+        turn_color = (255, 100, 100)
+    else:
+        turn_color = White
     
-    # Move count
-    move_text = f"Moves: {len(move_history)}"
-    surface = small_font.render(move_text, True, White)
-    screen.blit(surface, (panel_x + 10, info_y))
-    info_y += spacing
+    turn_surface = small_font.render(turn_text, True, turn_color)
+    screen.blit(turn_surface, (info_x, info_y))
     
     # Material count
     white_material = count_material('white')
@@ -338,51 +570,32 @@ def draw_info_panel():
     advantage = white_material - black_material
     
     if advantage > 0:
-        adv_text = f"White +{advantage}"
+        mat_text = f"Material: White +{advantage}"
     elif advantage < 0:
-        adv_text = f"Black +{-advantage}"
+        mat_text = f"Material: Black +{abs(advantage)}"
     else:
-        adv_text = "Equal"
+        mat_text = "Material: Equal"
     
-    surface = small_font.render(adv_text, True, White)
-    screen.blit(surface, (panel_x + 10, info_y))
-    info_y += spacing
+    mat_surface = tiny_font.render(mat_text, True, Panel_text)
+    screen.blit(mat_surface, (info_x, info_y + 35))
     
-    # Last move
-    if move_history:
-        last_move = move_history[-1]
-        move_text = f"Last: {last_move}"
-        surface = small_font.render(move_text, True, White)
-        screen.blit(surface, (panel_x + 10, info_y))
-"""===========================================================================DRAW CAPTURED PIECES==========================================================================="""
-def draw_captured_pieces():
-    """Show captured pieces."""
-    y_offset = height - 60
+    # Move count
+    move_count_text = f"Move: {len(move_history)}"
+    move_surface = tiny_font.render(move_count_text, True, Panel_text)
+    screen.blit(move_surface, (info_x, info_y + 60))
+"""===========================================================================DRAW RIGHT PANEL==========================================================================="""
+def draw_right_panel():
+    """Draw complete right panel with all components"""
+    # Panel background
+    panel_rect = pygame.Rect(board_width, 0, panel_width, height)
+    pygame.draw.rect(screen, Panel_bg, panel_rect)
     
-    # Black's captured pieces
-    x = 10
-    for piece in captured_pieces['white']:
-        if images_loaded:
-            small_img = pygame.transform.scale(piece_images[piece], (30, 30))
-            screen.blit(small_img, (x, y_offset))
-        else:
-            symbol = piece_symbols[piece]
-            text = small_font.render(symbol, True, White)
-            screen.blit(text, (x, y_offset))
-        x += 35
-    
-    # White's captured pieces  
-    y_offset -= 40
-    x = 10
-    for piece in captured_pieces['black']:
-        if images_loaded:
-            small_img = pygame.transform.scale(piece_images[piece], (30, 30))
-            screen.blit(small_img, (x, y_offset))
-        else:
-            symbol = piece_symbols[piece]
-            text = small_font.render(symbol, True, Black)
-            screen.blit(text, (x, y_offset))
-        x += 35
+    # Draw all components
+    # draw_evaluation_bar()
+    # draw_evaluation_graph()
+    draw_move_history()
+    draw_captured_pieces_panel()
+    draw_game_info_panel()
 """===========================================================================COUNT MATERIAL==========================================================================="""
 def count_material(color):
     """Count material value for a color."""
@@ -492,6 +705,8 @@ def move_piece(from_square , to_square):
     
     move_history.append(move_str)
     print(f"Move: {move_str}")
+    current_evaluation = evaluate_board() / 100  # Convert to pawn units
+    evaluation_history.append(current_evaluation)
 
     return True
 """===========================================================================PIECE IS ON BOARD==========================================================================="""
@@ -1038,6 +1253,74 @@ def get_best_move_material(color):
                 best_move = (from_square, to_square)
     
     return best_move
+"""===========================================================================POSITION HASH==========================================================================="""
+def position_hash():
+    """Create a unique hash for current board position."""
+    return str(board) 
+"""===========================================================================BEST MOVE ITERATIVE==========================================================================="""
+def get_best_move_iterative(color, max_time=5.0):
+    """
+    Search with iterative deepening.
+    
+    max_time: Maximum seconds to think
+    """
+    best_move = None
+    start_time = time.time()
+    
+    for depth in range(1, 10):  # Try depths 1 through 9
+        if time.time() - start_time > max_time:
+            break  # Out of time!
+        
+        try:
+            move, score = minimax_root(color, depth)
+            best_move = move
+            print(f"Depth {depth}: score {score}, move {move}")
+        
+        except TimeoutError:
+            break
+    
+    return best_move
+"""===========================================================================MINIMAX ROOT==========================================================================="""
+def minimax_root(color, depth):
+    """Top-level minimax that returns best move."""
+    global board
+    moves = get_ordered_move(color)
+    best_move = moves[0] if moves else None
+    best_score = float('-inf') if color == 'white' else float('inf')
+    
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    for move in moves:
+        from_sq, to_sq = move
+        from_row, from_col = from_sq
+        to_row, to_col = to_sq
+        
+        # Make move
+        original_board = copy.deepcopy(board)
+        board[to_row][to_col] = board[from_row][from_col]
+        board[from_row][from_col] = '.'
+        
+        score = minimax(depth - 1, color == 'black', alpha, beta)
+        
+        # Undo move
+        board = copy.deepcopy(original_board)
+        
+        if color == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, score)
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move
+            beta = min(beta, score)
+        
+        if beta <= alpha:
+            break
+    
+    return best_move, best_score
 """===========================================================================MINIMAX==========================================================================="""
 def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
     """
@@ -1049,16 +1332,27 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
     """
     global board
     # Base case: reached max depth or game over
+    pos_hash = position_hash()
+    if pos_hash in transposition_table:
+        stored_depth, stored_score = transposition_table[pos_hash]
+        if stored_depth >= depth:
+            return stored_score
+
     if depth == 0:
-        return evaluate_board()
+        final_score = evaluate_board()
+        transposition_table[pos_hash] = (depth, final_score)
+        return final_score
     
     legal_moves = get_ordered_move('white' if is_maximizing else 'black')
     
     if not legal_moves:
         # Checkmate or stalemate
         if is_in_check('white' if is_maximizing else 'black'):
-            return -10000 if is_maximizing else 10000  # Checkmate
-        return 0  # Stalemate
+            final_score = -10000 if is_maximizing else 10000  # Checkmate
+        else:
+            final_score = 0  # Stalemate
+        transposition_table[pos_hash] = (depth, final_score)
+        return final_score
     
     if is_maximizing:
         max_eval = float('-inf')
@@ -1081,6 +1375,7 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
             if beta <= alpha:
                 break  # Pruning
         
+        transposition_table[pos_hash] = (depth, max_eval)
         return max_eval
     
     else:
@@ -1104,6 +1399,7 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
             if beta <= alpha:
                 break  # Pruning
         
+        transposition_table[pos_hash] = (depth, min_eval)
         return min_eval
 """===========================================================================MINIMAX MOVE AI==========================================================================="""
 def get_best_move_minimax(color, depth=3):
@@ -1190,6 +1486,8 @@ while run:
                 continue
 
             mouse_pos = event.pos
+            if mouse_pos[0] >= board_width:
+                continue
             clicked_square = get_square_from_mouse(mouse_pos)
 
             if clicked_square:
@@ -1230,17 +1528,22 @@ while run:
                         else:
                             print("Invalid move! That's not a legal move.")
     
-    if current_turn == 'black':  # AI's turn
-        move = get_best_move_minimax('black')
-        if move:
-            from_square, to_square = move
-            move_piece(from_square, to_square)
-            if not promotion_pending:
-                switch_turn()
+        # Update animation
+        update_animation()
+        
+        # AI's turn - only after animation completes
+        if current_turn == 'black' and not animating_move:
+            move = get_best_move_minimax('black')
+            if move:
+                from_square, to_square = move
+                move_piece(from_square, to_square)
+                if not promotion_pending:
+                    switch_turn()
 
     draw_board()
     draw_pieces()
-    draw_info()
+    # draw_info()
+    draw_right_panel()
     draw_game_over()
     draw_promotion_ui()
 
