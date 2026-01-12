@@ -69,6 +69,11 @@ piece_moved = {
 captured_pieces = {'white': [], 'black': []}
 en_passant_target = None
 promotion_pending = None
+# Move replay/history tracking
+board_history = []  # List of board states at each move
+game_state_history = []  # List of (captured_pieces, en_passant_target, piece_moved) at each move
+current_move_index = -1  # -1 = live game, >= 0 = replaying a past move
+replay_animations = []  # List of (from_pos, to_pos, piece, start_time) for animated replay moves
 #===========================================================================TIME CONTROL===========================================================================
 time_control = None
 white_time_remaining = 0
@@ -258,6 +263,9 @@ animation_duration = 0.4  # Faster, snappier animations
 evaluation_history = []  
 current_evaluation = 0 
 transposition_table = {}
+# Move replay feature
+move_history_rects = {}  # Maps move_index -> pygame.Rect for click detection
+replay_button_rects = {}  # Maps button_name -> pygame.Rect for control buttons
 # Enhanced animation variables
 piece_scale_animation = None  # For piece selection scaling
 hover_square = None  # For hover effects
@@ -373,7 +381,46 @@ def draw_pieces():
                 text_rect = text_surface.get_rect(center=(center_x, center_y))
                 screen.blit(text_surface, text_rect)
     
-    # Draw animated piece with shadow
+    # Draw replay animations (multiple pieces moving simultaneously)
+    for anim in replay_animations[:]:  # Copy list to allow modification during iteration
+        from_row, from_col = anim['from']
+        to_row, to_col = anim['to']
+        piece = anim['piece']
+        start_time = anim['start_time']
+        
+        # Calculate animation progress
+        elapsed = (pygame.time.get_ticks() - start_time) / 1000.0
+        progress = ease_in_out(min(elapsed / animation_duration, 1.0))
+        
+        from_x = from_col * square_size + square_size // 2
+        from_y = from_row * square_size + square_size // 2
+        to_x = to_col * square_size + square_size // 2
+        to_y = to_row * square_size + square_size // 2
+        
+        current_x = from_x + (to_x - from_x) * progress
+        current_y = from_y + (to_y - from_y) * progress
+        
+        # Draw animated piece
+        if images_loaded and piece in piece_images:
+            image = piece_images[piece]
+            # Slight scale up for visibility
+            scale = 1.05
+            new_size = int(square_size * scale)
+            scaled_image = pygame.transform.scale(image, (new_size, new_size))
+            rect = scaled_image.get_rect(center=(int(current_x), int(current_y)))
+            screen.blit(scaled_image, rect)
+        else:
+            symbol = piece_symbols[piece]
+            text_color = White if piece.isupper() else Black
+            text_surface = font.render(symbol, True, text_color)
+            text_rect = text_surface.get_rect(center=(int(current_x), int(current_y)))
+            screen.blit(text_surface, text_rect)
+        
+        # Remove animation when done
+        if progress >= 1.0:
+            replay_animations.remove(anim)
+    
+    # Draw main animated piece with shadow (for live game moves)
     if animating_move:
         from_square, to_square, start_time, piece = animating_move
         from_row, from_col = from_square
@@ -540,17 +587,98 @@ def draw_coordinates():
         rank = str(8 - row)
         text = coord_font.render(rank, True, White)
         screen.blit(text, (x, y))
+"""===========================================================================JUMP TO MOVE==========================================================================="""
+def jump_to_move(move_index):
+    """Restore board state to a specific move in history (for replay).
+    
+    move_index: -1 = live game, 0+ = replay state after move N
+    Creates animations to show the transition smoothly.
+    """
+    global board, board_history, game_state_history, current_move_index
+    global captured_pieces, en_passant_target, piece_moved, halfmove_clock
+    global current_turn, selected_square, valid_moves, _legal_moves_cache, current_zobrist
+    global replay_animations
+    
+    # Save current board before change (for animation)
+    board_before = [row[:] for row in board]
+    
+    # Clamp index
+    if move_index < -1:
+        move_index = -1
+    if move_index >= len(board_history):
+        move_index = len(board_history) - 1
+    
+    current_move_index = move_index
+    
+    if move_index == -1:
+        # Return to live game (just mark as live, don't restore state)
+        _legal_moves_cache.clear()
+        selected_square = None
+        valid_moves = []
+        replay_animations = []
+        return
+    
+    # Restore board state from history
+    board = [row[:] for row in board_history[move_index]]
+    state = game_state_history[move_index]
+    captured_pieces = state['captured_pieces'].copy()
+    captured_pieces['white'] = state['captured_pieces']['white'][:]
+    captured_pieces['black'] = state['captured_pieces']['black'][:]
+    en_passant_target = state['en_passant_target']
+    piece_moved = state['piece_moved'].copy()
+    halfmove_clock = state['halfmove_clock']
+    
+    # Recalculate current turn based on move count (move 0 = after white's 1st move, so black's turn)
+    current_turn = 'black' if (move_index % 2) == 0 else 'white'
+    
+    # Recalculate current_zobrist for the restored state
+    current_zobrist = zobrist_hash()
+    
+    # Generate animations for pieces that moved
+    replay_animations = []
+    start_time = pygame.time.get_ticks()
+    
+    for r in range(8):
+        for c in range(8):
+            piece_before = board_before[r][c]
+            piece_after = board[r][c]
+            
+            # If a piece was here before but not now, it moved away
+            if piece_before != '.' and piece_before != piece_after:
+                # Find where this piece moved to
+                for tr in range(8):
+                    for tc in range(8):
+                        if board_before[tr][tc] == '.' and board[tr][tc] == piece_before:
+                            # Found it! Piece moved from (r,c) to (tr,tc)
+                            anim = {
+                                'from': (r, c),
+                                'to': (tr, tc),
+                                'piece': piece_before,
+                                'start_time': start_time
+                            }
+                            replay_animations.append(anim)
+                            break
+    
+    _legal_moves_cache.clear()
+    selected_square = None
+    valid_moves = []
+
+
 """===========================================================================DRAW MOVE HISTORY==========================================================================="""
 def draw_move_history():
-    """Draw scrollable move history"""
+    """Draw scrollable, clickable move history with replay support."""
+    global move_history_rects, replay_button_rects  # Store rects for click detection
+    move_history_rects = {}  # Dict: move_index -> pygame.Rect
+    replay_button_rects = {}  # Dict: button_name -> pygame.Rect
+    
     hist_x = board_width + 15
     # If clocks are enabled, reserve space at top for them
     if time_control is not None and time_control != 'no_clock':
         hist_y = 130
-        hist_height = 200
+        hist_height = 180
     else:
         hist_y = 20
-        hist_height = 300
+        hist_height = 250
     hist_width = 220
     
     # Background with border
@@ -569,39 +697,107 @@ def draw_move_history():
     
     # Draw moves with improved formatting
     y_offset = hist_y + 35
-    move_height = 20
+    move_height = 18
     
-    # Calculate which moves to show (last 18 moves)
-    start_idx = max(0, len(move_history) - 36)  # 18 pairs = 36 moves
+    # Calculate which moves to show (fits better now)
+    start_idx = max(0, len(move_history) - 32)  # 16 pairs = 32 moves
     
     for i in range(start_idx, len(move_history), 2):
-        if y_offset > hist_y + hist_height - move_height:
+        if y_offset > hist_y + hist_height - 50:  # Reserve space for buttons
             break
         
         move_num = (i // 2) + 1
         white_move = move_history[i]
         black_move = move_history[i + 1] if i + 1 < len(move_history) else ""
         
-        # Highlight last move with better color
-        if i >= len(move_history) - 2:
-            highlight_rect = pygame.Rect(hist_x + 3, y_offset - 2, hist_width - 6, move_height)
+        # Determine if this move pair is currently replayed or live
+        white_idx = i  # Index in move_history
+        black_idx = i + 1
+        is_white_current = (current_move_index == white_idx)
+        is_black_current = (current_move_index == black_idx)
+        is_last_pair = (i >= len(move_history) - 2)
+        
+        # Highlight background based on state
+        highlight_rect = pygame.Rect(hist_x + 3, y_offset - 1, hist_width - 6, move_height)
+        if is_white_current or is_black_current:
+            # Replay highlight (bright blue)
+            pygame.draw.rect(screen, (80, 150, 200), highlight_rect)
+            pygame.draw.rect(screen, (150, 200, 255), highlight_rect, 1)
+        elif is_last_pair and current_move_index == -1:
+            # Live game (last pair, not replaying)
             pygame.draw.rect(screen, (100, 120, 140), highlight_rect)
             pygame.draw.rect(screen, (150, 180, 200), highlight_rect, 1)
         
         # Move number
         num_surface = tiny_font.render(f"{move_num}.", True, (200, 160, 100))
-        screen.blit(num_surface, (hist_x + 8, y_offset - 2))
+        screen.blit(num_surface, (hist_x + 8, y_offset))
         
-        # White's move
+        # White's move (clickable)
         white_surface = tiny_font.render(white_move, True, (255, 240, 200))
-        screen.blit(white_surface, (hist_x + 35, y_offset - 2))
+        white_rect = pygame.Rect(hist_x + 32, y_offset - 1, 85, move_height)
+        move_history_rects[white_idx] = white_rect
+        screen.blit(white_surface, (hist_x + 32, y_offset))
         
-        # Black's move
+        # Black's move (clickable if exists)
         if black_move:
             black_surface = tiny_font.render(black_move, True, (200, 200, 200))
-            screen.blit(black_surface, (hist_x + 130, y_offset - 2))
+            black_rect = pygame.Rect(hist_x + 128, y_offset - 1, 85, move_height)
+            move_history_rects[black_idx] = black_rect
+            screen.blit(black_surface, (hist_x + 128, y_offset))
         
         y_offset += move_height
+    
+    # Draw replay control buttons at bottom
+    button_y = hist_y + hist_height - 40
+    button_height = 28
+    button_width = 50
+    spacing = 8
+    
+    # "< Prev" button
+    prev_x = hist_x + 10
+    prev_rect = pygame.Rect(prev_x, button_y, button_width, button_height)
+    prev_enabled = (current_move_index > -1)  # Can go back if not at live
+    prev_color = (100, 150, 200) if prev_enabled else (60, 60, 80)
+    pygame.draw.rect(screen, prev_color, prev_rect)
+    pygame.draw.rect(screen, (150, 200, 255) if prev_enabled else (100, 100, 120), prev_rect, 1)
+    prev_text = tiny_font.render("◄ Prev", True, (255, 255, 255) if prev_enabled else (120, 120, 120))
+    prev_text_rect = prev_text.get_rect(center=prev_rect.center)
+    screen.blit(prev_text, prev_text_rect)
+    replay_button_rects['prev'] = prev_rect
+    
+    # "Live" button (go to latest)
+    live_x = prev_x + button_width + spacing
+    live_rect = pygame.Rect(live_x, button_y, button_width, button_height)
+    live_enabled = (current_move_index != -1)  # Can go to live if replaying
+    live_color = (200, 150, 100) if live_enabled else (60, 60, 80)
+    pygame.draw.rect(screen, live_color, live_rect)
+    pygame.draw.rect(screen, (255, 200, 150) if live_enabled else (100, 100, 120), live_rect, 1)
+    live_text = tiny_font.render("Live", True, (255, 255, 255) if live_enabled else (120, 120, 120))
+    live_text_rect = live_text.get_rect(center=live_rect.center)
+    screen.blit(live_text, live_text_rect)
+    replay_button_rects['live'] = live_rect
+    
+    # "Next >" button
+    next_x = live_x + button_width + spacing
+    next_rect = pygame.Rect(next_x, button_y, button_width, button_height)
+    next_enabled = (current_move_index < len(move_history) - 1)  # Can go forward if not at last
+    next_color = (100, 150, 200) if next_enabled else (60, 60, 80)
+    pygame.draw.rect(screen, next_color, next_rect)
+    pygame.draw.rect(screen, (150, 200, 255) if next_enabled else (100, 100, 120), next_rect, 1)
+    next_text = tiny_font.render("Next ►", True, (255, 255, 255) if next_enabled else (120, 120, 120))
+    next_text_rect = next_text.get_rect(center=next_rect.center)
+    screen.blit(next_text, next_text_rect)
+    replay_button_rects['next'] = next_rect
+    
+    # Display current move index
+    if current_move_index == -1:
+        move_label = "Live Game"
+    else:
+        move_label = f"Move {current_move_index + 1}/{len(move_history)}"
+    move_label_surface = tiny_font.render(move_label, True, (180, 180, 180))
+    screen.blit(move_label_surface, (hist_x + 10, button_y + button_height + 5))
+
+
 """===========================================================================DRAW CAPTURED PIECES PANEL==========================================================================="""
 def draw_captured_pieces_panel():
     """Draw captured pieces in panel"""
@@ -984,6 +1180,17 @@ def move_piece(from_square , to_square):
     current_evaluation = evaluate_board() / 100  # Convert to pawn units
     evaluation_history.append(current_evaluation)
 
+    # Save board state for replay feature
+    global board_history, game_state_history, current_move_index
+    board_history.append([row[:] for row in board])  # Deep copy of current board
+    game_state_history.append({
+        'captured_pieces': {'white': captured_pieces['white'][:], 'black': captured_pieces['black'][:]},
+        'en_passant_target': en_passant_target,
+        'piece_moved': piece_moved.copy(),
+        'halfmove_clock': halfmove_clock
+    })
+    current_move_index = len(board_history) - 1  # Set to latest move (live game)
+
     # Update halfmove clock: reset on pawn move or capture
     if piece.upper() == 'P' or capture_happened:
         halfmove_clock = 0
@@ -1274,10 +1481,13 @@ def update_pieces_moved(piece , from_row , from_col):
 def is_square_attacked(row, col, by_color):
     """Optimized check if a square is attacked by a color."""
     # Check pawn attacks (simple early exit)
+    # Pawns attack diagonally in the direction they move
+    # White pawns move up (direction -1), so they attack FROM row+1 (below them)
+    # Black pawns move down (direction +1), so they attack FROM row-1 (above them)
     if by_color == 'white':
-        pawn_dirs = [(-1, -1), (-1, 1)]
+        pawn_dirs = [(1, -1), (1, 1)]  # Pawns below the target square
     else:
-        pawn_dirs = [(1, -1), (1, 1)]
+        pawn_dirs = [(-1, -1), (-1, 1)]  # Pawns above the target square
     
     for d_row, d_col in pawn_dirs:
         check_row, check_col = row + d_row, col + d_col
@@ -2245,6 +2455,28 @@ while run:
         if event.type == pygame.QUIT:
             run = False
             continue
+        
+        # Handle keyboard navigation for replay (arrow keys)
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:  # Left arrow - previous move
+                if current_move_index > -1:
+                    jump_to_move(current_move_index - 1)
+                    selected_square = None
+                    valid_moves = []
+            elif event.key == pygame.K_RIGHT:  # Right arrow - next move
+                if current_move_index < len(move_history) - 1:
+                    jump_to_move(current_move_index + 1)
+                    selected_square = None
+                    valid_moves = []
+            elif event.key == pygame.K_END:  # End key - go to live game
+                jump_to_move(-1)
+                selected_square = None
+                valid_moves = []
+            elif event.key == pygame.K_HOME:  # Home key - go to start
+                jump_to_move(0)
+                selected_square = None
+                valid_moves = []
+        
         if promotion_pending:
             if event.type == pygame.QUIT:
                 run = False
@@ -2269,6 +2501,39 @@ while run:
                 continue
 
             mouse_pos = event.pos
+            
+            # Check for replay button clicks
+            button_clicked = False
+            for button_name, rect in replay_button_rects.items():
+                if rect.collidepoint(mouse_pos):
+                    if button_name == 'prev' and current_move_index > -1:
+                        jump_to_move(current_move_index - 1)
+                        button_clicked = True
+                    elif button_name == 'next' and current_move_index < len(move_history) - 1:
+                        jump_to_move(current_move_index + 1)
+                        button_clicked = True
+                    elif button_name == 'live':
+                        jump_to_move(-1)
+                        button_clicked = True
+                    selected_square = None
+                    valid_moves = []
+                    break
+            
+            if button_clicked:
+                continue
+            
+            # Check for move history clicks (replay feature)
+            for move_idx, rect in move_history_rects.items():
+                if rect.collidepoint(mouse_pos):
+                    jump_to_move(move_idx)
+                    selected_square = None
+                    valid_moves = []
+                    button_clicked = True
+                    break
+            
+            if button_clicked:
+                continue
+
             if mouse_pos[0] >= board_width:
                 continue
             clicked_square = get_square_from_mouse(mouse_pos)
