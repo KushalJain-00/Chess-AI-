@@ -662,8 +662,6 @@ def jump_to_move(move_index):
     _legal_moves_cache.clear()
     selected_square = None
     valid_moves = []
-
-
 """===========================================================================DRAW MOVE HISTORY==========================================================================="""
 def draw_move_history():
     """Draw scrollable, clickable move history with replay support."""
@@ -796,8 +794,6 @@ def draw_move_history():
         move_label = f"Move {current_move_index + 1}/{len(move_history)}"
     move_label_surface = tiny_font.render(move_label, True, (180, 180, 180))
     screen.blit(move_label_surface, (hist_x + 10, button_y + button_height + 5))
-
-
 """===========================================================================DRAW CAPTURED PIECES PANEL==========================================================================="""
 def draw_captured_pieces_panel():
     """Draw captured pieces in panel"""
