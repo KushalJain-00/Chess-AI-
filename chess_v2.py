@@ -6,6 +6,7 @@ import random
 import time
 #===========================================================================INTIALIZING PYGAME===========================================================================
 pygame.init()
+pygame.mixer.init()
 #===========================================================================CONSTANTS===========================================================================
 board_width = 640
 panel_width = 250
@@ -72,6 +73,8 @@ promotion_pending = None
 white_in_check_cached = False
 black_in_check_cached = False
 ai_is_thinking = False
+sounds = {}
+sound_enabled = True
 # Move replay/history tracking
 board_history = []  # List of board states at each move
 game_state_history = []  # List of (captured_pieces, en_passant_target, piece_moved) at each move
@@ -266,6 +269,9 @@ animation_duration = 0.4  # Faster, snappier animations
 evaluation_history = []  
 current_evaluation = 0 
 transposition_table = {}
+# Cache for legal moves to avoid recalculating
+_legal_moves_cache = {}
+_cache_board_hash = None
 # Move replay feature
 move_history_rects = {}  # Maps move_index -> pygame.Rect for click detection
 replay_button_rects = {}  # Maps button_name -> pygame.Rect for control buttons
@@ -1133,6 +1139,7 @@ def move_piece(from_square , to_square):
     if piece.upper() == 'K' and abs(to_col - from_col) == 2:
         execute_castling(from_row, from_col, to_col)
         update_pieces_moved(piece, from_row, from_col)
+        play_sound('castle', volume=0.6)
         _legal_moves_cache.clear()
         transposition_table.clear()
         return True
@@ -1157,9 +1164,14 @@ def move_piece(from_square , to_square):
         board[to_row][to_col] = piece
         board[from_row][from_col] = '.'
         board[from_row][to_col] = '.'  
+        play_sound('pawn_capture', volume=0.6)
     else:
         board[to_row][to_col] = piece
         board[from_row][from_col] = '.'
+        if captured_piece != '.':
+            play_capture_sound(captured_piece, piece)  # ← ADD THIS
+        else:
+            play_move_sound(piece)
     
     update_pieces_moved(piece , from_row , from_col)
     _legal_moves_cache.clear()
@@ -1634,9 +1646,6 @@ def get_valid_moves(row , col):
     
     return legal_moves
 """===========================================================================GET ALL LEGAL MOVES==========================================================================="""
-# Cache for legal moves to avoid recalculating
-_legal_moves_cache = {}
-_cache_board_hash = None
 def get_all_legal_moves(color):
     global _legal_moves_cache, _cache_board_hash
     
@@ -1683,6 +1692,7 @@ def check_game_over():
         else:
             # King not in check + no moves = Stalemate
             game_result = "Stalemate! It's a draw!"
+            play_sound('stalemate', volume=0.7)
             print("\n" + "=" * 60)
             print(game_result)
             print("=" * 60)
@@ -1731,6 +1741,7 @@ def switch_turn():
         current_zobrist ^= ZOBRIST_SIDE
     if is_in_check(current_turn):
         print(f"Check! {current_turn.capitalize()}'s king is under attack!")
+        play_sound('check', volume=0.7)
     
     if not check_game_over():
         print(f"{current_turn.capitalize()}'s turn")
@@ -2186,6 +2197,141 @@ def get_best_move_minimax(color, depth=5):
     # Use minimax_root for consistent alpha-beta search
     move, score = minimax_root(color, depth)
     return move
+"""===========================================================================FORMAT TIME==========================================================================="""
+def format_time(seconds):
+    mins = int(seconds) // 60
+    secs = int(seconds) % 60
+    return f"{mins}:{secs:02d}"
+"""===========================================================================UPDATE CLOCKS==========================================================================="""
+def update_clocks():
+    global white_time_remaining, black_time_remaining, last_time_update, current_turn, time_exceeded, game_over, game_result
+    
+    if time_control == 'no_clock':
+        return
+    
+    current_time = time.time()
+    if last_time_update is None:
+        last_time_update = current_time
+        return
+    
+    time_delta = current_time - last_time_update
+    last_time_update = current_time
+    
+    if current_turn == 'white':
+        white_time_remaining -= time_delta
+        if white_time_remaining <= 0:
+            white_time_remaining = 0
+            time_exceeded = 'white'
+            game_over = True
+            game_result = "Black won! White's time expired."
+    else:
+        black_time_remaining -= time_delta
+        if black_time_remaining <= 0:
+            black_time_remaining = 0
+            time_exceeded = 'black'
+            game_over = True
+            game_result = "White won! Black's time expired."
+"""===========================================================================DRAW CLOCKS==========================================================================="""
+def draw_clocks():
+    if time_control == 'no_clock':
+        return
+    
+    clock_y = 10
+    clock_x = board_width + 10
+    clock_width = panel_width - 20
+    clock_height = 50
+    
+    white_bg = (80, 80, 80) if current_turn != 'white' else (120, 120, 80)
+    pygame.draw.rect(screen, white_bg, (clock_x, clock_y, clock_width, clock_height))
+    pygame.draw.rect(screen, (200, 200, 200), (clock_x, clock_y, clock_width, clock_height), 2)
+    
+    white_time_text = format_time(white_time_remaining)
+    white_time_surface = small_font.render(white_time_text, True, (255, 255, 100) if current_turn == 'white' else (200, 200, 200))
+    white_time_rect = white_time_surface.get_rect(center=(clock_x + clock_width // 2, clock_y + clock_height // 2))
+    screen.blit(white_time_surface, white_time_rect)
+    
+    black_clock_y = clock_y + clock_height + 5
+    black_bg = (80, 80, 80) if current_turn != 'black' else (120, 120, 80)
+    pygame.draw.rect(screen, black_bg, (clock_x, black_clock_y, clock_width, clock_height))
+    pygame.draw.rect(screen, (200, 200, 200), (clock_x, black_clock_y, clock_width, clock_height), 2)
+    
+    black_time_text = format_time(black_time_remaining)
+    black_time_surface = small_font.render(black_time_text, True, (255, 255, 100) if current_turn == 'black' else (200, 200, 200))
+    black_time_rect = black_time_surface.get_rect(center=(clock_x + clock_width // 2, black_clock_y + clock_height // 2))
+    screen.blit(black_time_surface, black_time_rect)
+"""===========================================================================LOAD SOUNDS==========================================================================="""
+def load_sounds():
+    global sounds 
+    sound_mapping = {
+        'move' : 'chess-pieces-hitting-wooden-board-99336.wav',
+        'horse_move' : 'Horse_Movement.wav',
+        'elephant_move' : 'Elephant_Movement.wav',
+
+        'capture': 'White_Captures_Piece.wav',
+        'white_capture': 'White_Captures_Piece.wav',
+        'black_capture': 'Black_Captures_Piece.wav',
+        'pawn_capture': 'Pawn_Capture.wav',
+        'queen_capture': 'Queen_Capture.wav',
+
+        'check': 'Check.wav',
+        'checkmate': 'Black_Checkmate.wav',
+        'stalemate': 'Stalemate.wav',
+        'ai_thinking': 'AI_Thinking.wav',
+
+        'castle': 'chess-pieces-hitting-wooden-board-99336.wav', 
+        'promote': 'chess-pieces-hitting-wooden-board-99336.wav',
+    }
+
+    sound_loaded = True
+    loaded_count = 0
+
+    for sound_name , filename in sound_mapping.items():
+        path = os.path.join('assets', 'Sounds', filename)
+        try:
+            sounds[sound_name] = pygame.mixer.Sound(path)
+            print(f"✓ Loaded: {sound_name}")
+            loaded_count += 1
+        except (pygame.error , FileNotFoundError) as e:
+            print(f"✗ Failed to load {sound_name}: {e}")
+            sounds[sound_name] = None
+            sounds_loaded = False
+    
+    return sound_loaded
+"""===========================================================================PLAY SOUNDS==========================================================================="""
+def play_sound(sound_name , volume = 1.0):
+    if sound_name in sounds and sounds[sound_name]:
+        sound = sounds[sound_name]
+        sound.set_volume(volume)
+        sound.play()
+"""===========================================================================PLAY MOVE SOUNDS==========================================================================="""
+def play_move_sound(piece):
+    piece_upper = piece.upper()
+    
+    if piece_upper == 'N':
+        play_sound('horse_move')
+    elif piece_upper == 'R':
+        play_sound('elephant_move')
+    else:
+        play_sound('move')
+"""===========================================================================PLAY CAPTURE SOUNDS==========================================================================="""
+def play_capture_sound(captured_piece, capturing_piece):
+    captured_upper = captured_piece.upper()
+    capturing_upper = capturing_piece.upper()
+    
+    if captured_upper == 'Q':
+        play_sound('queen_capture')
+    elif capturing_upper == 'P':
+        play_sound('pawn_capture')
+    elif capturing_piece.isupper():
+        play_sound('white_capture')
+    else:
+        play_sound('black_capture')
+"""===========================================================================SET MASTER VOLUME==========================================================================="""
+def set_master_volume(volume):
+    volume = max(0.0, min(1.0, volume))
+    for sound in sounds.values():
+        if sound:
+            sound.set_volume(volume)
 """===========================================================================RESET GAME==========================================================================="""
 def reset_game():
     """Reset all game state to start a new game."""
@@ -2506,72 +2652,11 @@ print(f"Game mode selected: {game_mode}")
 if game_mode == 'two_player':
     select_time_control()
     print(f"Time control selected: {time_control}")
-"""===========================================================================FORMAT TIME==========================================================================="""
-def format_time(seconds):
-    mins = int(seconds) // 60
-    secs = int(seconds) % 60
-    return f"{mins}:{secs:02d}"
-"""===========================================================================UPDATE CLOCKS==========================================================================="""
-def update_clocks():
-    global white_time_remaining, black_time_remaining, last_time_update, current_turn, time_exceeded, game_over, game_result
-    
-    if time_control == 'no_clock':
-        return
-    
-    current_time = time.time()
-    if last_time_update is None:
-        last_time_update = current_time
-        return
-    
-    time_delta = current_time - last_time_update
-    last_time_update = current_time
-    
-    if current_turn == 'white':
-        white_time_remaining -= time_delta
-        if white_time_remaining <= 0:
-            white_time_remaining = 0
-            time_exceeded = 'white'
-            game_over = True
-            game_result = "Black won! White's time expired."
-    else:
-        black_time_remaining -= time_delta
-        if black_time_remaining <= 0:
-            black_time_remaining = 0
-            time_exceeded = 'black'
-            game_over = True
-            game_result = "White won! Black's time expired."
-"""===========================================================================DRAW CLOCKS==========================================================================="""
-def draw_clocks():
-    if time_control == 'no_clock':
-        return
-    
-    clock_y = 10
-    clock_x = board_width + 10
-    clock_width = panel_width - 20
-    clock_height = 50
-    
-    white_bg = (80, 80, 80) if current_turn != 'white' else (120, 120, 80)
-    pygame.draw.rect(screen, white_bg, (clock_x, clock_y, clock_width, clock_height))
-    pygame.draw.rect(screen, (200, 200, 200), (clock_x, clock_y, clock_width, clock_height), 2)
-    
-    white_time_text = format_time(white_time_remaining)
-    white_time_surface = small_font.render(white_time_text, True, (255, 255, 100) if current_turn == 'white' else (200, 200, 200))
-    white_time_rect = white_time_surface.get_rect(center=(clock_x + clock_width // 2, clock_y + clock_height // 2))
-    screen.blit(white_time_surface, white_time_rect)
-    
-    black_clock_y = clock_y + clock_height + 5
-    black_bg = (80, 80, 80) if current_turn != 'black' else (120, 120, 80)
-    pygame.draw.rect(screen, black_bg, (clock_x, black_clock_y, clock_width, clock_height))
-    pygame.draw.rect(screen, (200, 200, 200), (clock_x, black_clock_y, clock_width, clock_height), 2)
-    
-    black_time_text = format_time(black_time_remaining)
-    black_time_surface = small_font.render(black_time_text, True, (255, 255, 100) if current_turn == 'black' else (200, 200, 200))
-    black_time_rect = black_time_surface.get_rect(center=(clock_x + clock_width // 2, black_clock_y + clock_height // 2))
-    screen.blit(black_time_surface, black_time_rect)
 """===========================================================================SETUP==========================================================================="""
 run = True
 clock = pygame.time.Clock()
 images_loaded = load_images()
+sounds_loaded = load_sounds()
 # Initialize check cache
 white_in_check_cached = is_in_check('white')
 black_in_check_cached = is_in_check('black')
@@ -2624,6 +2709,7 @@ while run:
                     if button_rect.collidepoint(x, y):
                         row, col = promotion_pending
                         promote_pawn(row, col, p)
+                        play_sound('promote', volume=0.6)
                         promotion_pending = None
                         switch_turn()
                         break
@@ -2725,6 +2811,7 @@ while run:
         # AI's turn - only in AI mode and only after animation completes
         if game_mode == 'ai' and current_turn == 'black' and not animating_move:
             ai_is_thinking = True
+            play_sound('ai_thinking', volume=0.2)
             draw_board()
             draw_pieces()
             draw_right_panel()
