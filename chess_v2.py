@@ -1751,22 +1751,135 @@ def switch_turn():
 def evaluate_board():
     """Evaluate current position. Positive = good for white."""
     score = 0
-    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
-    
-    for row in board:
-        for piece in row:
+    piece_values = {'P': 100, 'N': 320, 'B': 320, 'R': 500, 'Q': 900, 'K': 20000}
+
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            
             if piece == '.':
                 continue
             
             piece_type = piece.upper()
+            
+            # Material value
             if piece_type in piece_values:
-                value = piece_values[piece_type]
+                material_value = piece_values[piece_type]
+                
+                # Positional value
+                positional_value = get_piece_square_value(piece, row, col)
+                
+                total_value = material_value + positional_value
+                
                 if piece.isupper():  # White
-                    score += value
+                    score += total_value
                 else:  # Black
-                    score -= value
+                    score -= total_value
     
     return score
+"""===========================================================================PIECE-SQUARE TABLES==========================================================================="""
+# Pawn table - encourage advancement and center control
+PAWN_TABLE = [
+    [0,   0,   0,   0,   0,   0,   0,   0],
+    [50,  50,  50,  50,  50,  50,  50,  50],
+    [10,  10,  20,  30,  30,  20,  10,  10],
+    [5,   5,   10,  25,  25,  10,  5,   5],
+    [0,   0,   0,   20,  20,  0,   0,   0],
+    [5,   -5,  -10, 0,   0,   -10, -5,  5],
+    [5,   10,  10,  -20, -20, 10,  10,  5],
+    [0,   0,   0,   0,   0,   0,   0,   0]
+]
+# Knight table - prefer center, avoid edges
+KNIGHT_TABLE = [
+    [-50, -40, -30, -30, -30, -30, -40, -50],
+    [-40, -20, 0,   0,   0,   0,   -20, -40],
+    [-30, 0,   10,  15,  15,  10,  0,   -30],
+    [-30, 5,   15,  20,  20,  15,  5,   -30],
+    [-30, 0,   15,  20,  20,  15,  0,   -30],
+    [-30, 5,   10,  15,  15,  10,  5,   -30],
+    [-40, -20, 0,   5,   5,   0,   -20, -40],
+    [-50, -40, -30, -30, -30, -30, -40, -50]
+]
+# Bishop table - prefer long diagonals
+BISHOP_TABLE = [
+    [-20, -10, -10, -10, -10, -10, -10, -20],
+    [-10, 0,   0,   0,   0,   0,   0,   -10],
+    [-10, 0,   5,   10,  10,  5,   0,   -10],
+    [-10, 5,   5,   10,  10,  5,   5,   -10],
+    [-10, 0,   10,  10,  10,  10,  0,   -10],
+    [-10, 10,  10,  10,  10,  10,  10,  -10],
+    [-10, 5,   0,   0,   0,   0,   5,   -10],
+    [-20, -10, -10, -10, -10, -10, -10, -20]
+]
+# Rook table - prefer 7th rank and open files
+ROOK_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5,  10, 10, 10, 10, 10, 10, 5],
+    [-5, 0,  0,  0,  0,  0,  0,  -5],
+    [-5, 0,  0,  0,  0,  0,  0,  -5],
+    [-5, 0,  0,  0,  0,  0,  0,  -5],
+    [-5, 0,  0,  0,  0,  0,  0,  -5],
+    [-5, 0,  0,  0,  0,  0,  0,  -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+# Queen table - prefer center, avoid early development
+QUEEN_TABLE = [
+    [-20, -10, -10, -5,  -5,  -10, -10, -20],
+    [-10, 0,   0,   0,   0,   0,   0,   -10],
+    [-10, 0,   5,   5,   5,   5,   0,   -10],
+    [-5,  0,   5,   5,   5,   5,   0,   -5],
+    [0,   0,   5,   5,   5,   5,   0,   -5],
+    [-10, 5,   5,   5,   5,   5,   0,   -10],
+    [-10, 0,   5,   0,   0,   0,   0,   -10],
+    [-20, -10, -10, -5,  -5,  -10, -10, -20]
+]
+# King table - stay safe in early/mid game
+KING_MIDDLE_GAME = [
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-20, -30, -30, -40, -40, -30, -30, -20],
+    [-10, -20, -20, -20, -20, -20, -20, -10],
+    [20,  20,  0,   0,   0,   0,   20,  20],
+    [20,  30,  10,  0,   0,   10,  30,  20]
+]
+# King endgame table - be active in center
+KING_END_GAME = [
+    [-50, -40, -30, -20, -20, -30, -40, -50],
+    [-30, -20, -10, 0,   0,   -10, -20, -30],
+    [-30, -10, 20,  30,  30,  20,  -10, -30],
+    [-30, -10, 30,  40,  40,  30,  -10, -30],
+    [-30, -10, 30,  40,  40,  30,  -10, -30],
+    [-30, -10, 20,  30,  30,  20,  -10, -30],
+    [-30, -30, 0,   0,   0,   0,   -30, -30],
+    [-50, -30, -30, -30, -30, -30, -30, -50]
+]
+"""===========================================================================GET PIECE SQUARE VALUE==========================================================================="""
+def get_piece_square_value(piece , row , col):
+    piece_type = piece.upper()
+
+    if piece.islower():
+        row = 7 - row
+    
+    if piece_type == 'P':
+        return PAWN_TABLE[row][col]
+    elif piece_type == 'N':
+        return KNIGHT_TABLE[row][col]
+    elif piece_type == 'B':
+        return BISHOP_TABLE[row][col]
+    elif piece_type == 'R':
+        return ROOK_TABLE[row][col]
+    elif piece_type == 'Q':
+        return QUEEN_TABLE[row][col]
+    elif piece_type == 'K':
+        # Use endgame table if few pieces left
+        total_material = count_material('white') + count_material('black')
+        if total_material < 30:  # Endgame
+            return KING_END_GAME[row][col]
+        else:  # Middle game
+            return KING_MIDDLE_GAME[row][col]
+    return 0
 """===========================================================================SCORE MOVE==========================================================================="""
 def score_move(from_square , to_square):
     from_row, from_col = from_square
