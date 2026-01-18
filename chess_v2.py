@@ -2266,6 +2266,7 @@ def load_sounds():
         'move' : 'chess-pieces-hitting-wooden-board-99336.wav',
         'horse_move' : 'Horse_Movement.wav',
         'elephant_move' : 'Elephant_Movement.wav',
+        'queen_move' : 'Queen_Movement.wav',
 
         'capture': 'White_Captures_Piece.wav',
         'white_capture': 'White_Captures_Piece.wav',
@@ -2311,6 +2312,8 @@ def play_move_sound(piece):
         play_sound('horse_move')
     elif piece_upper == 'R':
         play_sound('elephant_move')
+    elif piece_upper == 'Q':
+        play_sound('queen_move')
     else:
         play_sound('move')
 """===========================================================================PLAY CAPTURE SOUNDS==========================================================================="""
