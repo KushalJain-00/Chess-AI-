@@ -10,7 +10,7 @@ pygame.mixer.init()
 #===========================================================================CONSTANTS===========================================================================
 board_width = 640
 panel_width = 250
-width = board_width + panel_width  # Total: 890px
+width = board_width + panel_width
 height = 720
 square_size = board_width // 8
 #===========================================================================COLORS===========================================================================
@@ -19,7 +19,7 @@ Panel_border = (80, 80, 80)
 Panel_text = (220, 220, 220)
 Eval_white = (240, 240, 240)
 Eval_black = (60, 60, 60)
-Graph_line = (100, 200, 255)  # Blue line for graph
+Graph_line = (100, 200, 255)
 Grid_line = (70, 70, 70)
 Light_square = (240 , 217 , 181)
 Dark_square = (181 , 136 , 99)
@@ -1749,10 +1749,10 @@ def switch_turn():
     print()
 """===========================================================================EVALUATE BOARD==========================================================================="""
 def evaluate_board():
-    """Evaluate current position. Positive = good for white."""
     score = 0
-    piece_values = {'P': 100, 'N': 320, 'B': 320, 'R': 500, 'Q': 900, 'K': 20000}
-
+    piece_values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # 1. Material + Position
     for row in range(8):
         for col in range(8):
             piece = board[row][col]
@@ -1762,19 +1762,42 @@ def evaluate_board():
             
             piece_type = piece.upper()
             
-            # Material value
             if piece_type in piece_values:
                 material_value = piece_values[piece_type]
-                
-                # Positional value
                 positional_value = get_piece_square_value(piece, row, col)
-                
                 total_value = material_value + positional_value
                 
-                if piece.isupper():  # White
+                if piece.isupper():
                     score += total_value
-                else:  # Black
+                else:
                     score -= total_value
+    
+    # 2. Mobility (piece activity)
+    white_mobility = evaluate_mobility('white')
+    black_mobility = evaluate_mobility('black')
+    score += (white_mobility - black_mobility) * 2
+    
+    # 3. King safety
+    white_king_safety = evaluate_king_safety('white')
+    black_king_safety = evaluate_king_safety('black')
+    score += white_king_safety - black_king_safety
+    
+    # 4. Pawn structure
+    score += evaluate_pawn_structure()
+    
+    # 5. Center control
+    score += evaluate_center_control()
+    
+    # 6. Rook placement
+    score += evaluate_rook_on_open_file()
+    
+    # 7. Bishop pair bonus
+    white_bishops = sum(1 for r in board for p in r if p == 'B')
+    black_bishops = sum(1 for r in board for p in r if p == 'b')
+    if white_bishops >= 2:
+        score += 30
+    if black_bishops >= 2:
+        score -= 30
     
     return score
 """===========================================================================PIECE-SQUARE TABLES==========================================================================="""
@@ -1880,6 +1903,157 @@ def get_piece_square_value(piece , row , col):
         else:  # Middle game
             return KING_MIDDLE_GAME[row][col]
     return 0
+"""===========================================================================EVALUATE MOBILITY==========================================================================="""
+def evaluate_mobility(color):
+    mobility = 0 
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece == '.':
+                continue
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == color:
+                moves = get_piece_moves(row, col)
+                mobility += len(moves)
+    return mobility
+"""===========================================================================EVALUATE KING SAFETY==========================================================================="""
+def evaluate_king_safety(color):
+    king_pos = find_king(color)
+    if not king_pos:
+        return 0
+    
+    king_row , king_col = king_pos
+    safety = 0
+
+    if color == 'white':
+        shield_row = king_row - 1
+        pawn = 'P'
+    else:
+        shield_row = king_row + 1
+        pawn = 'p'
+    
+    if 0 <= shield_row < 8:
+        for col_offset in [-1, 0, 1]:
+            check_col = king_col + col_offset
+            if 0 <= check_col < 8:
+                if board[shield_row][check_col] == pawn:
+                    safety += 10
+
+    enemy_color = 'black' if color == 'white' else 'white'
+    for row in range(max(0, king_row - 2), min(8, king_row + 3)):
+        for col in range(max(0, king_col - 2), min(8, king_col + 3)):
+            piece = board[row][col]
+            if piece == '.':
+                continue
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color == enemy_color:
+                safety -= 5
+    
+    return safety
+"""===========================================================================EVALUATE PAWN STRUCTURE==========================================================================="""
+def evaluate_pawn_structure(): 
+    score = 0
+    
+    for col in range(8):
+        white_pawns_in_file = 0
+        black_pawns_in_file = 0
+        
+        for row in range(8):
+            if board[row][col] == 'P':
+                white_pawns_in_file += 1
+            elif board[row][col] == 'p':
+                black_pawns_in_file += 1
+        
+        # Penalty for doubled pawns
+        if white_pawns_in_file > 1:
+            score -= 10 * (white_pawns_in_file - 1)
+        if black_pawns_in_file > 1:
+            score += 10 * (black_pawns_in_file - 1)
+    
+    # Check for isolated pawns
+    for col in range(8):
+        for row in range(8):
+            piece = board[row][col]
+            if piece.upper() != 'P':
+                continue
+            
+            # Check if pawn has friendly pawns on adjacent files
+            has_support = False
+            for adj_col in [col - 1, col + 1]:
+                if 0 <= adj_col < 8:
+                    for check_row in range(8):
+                        if board[check_row][adj_col] == piece:
+                            has_support = True
+                            break
+            
+            # Isolated pawn penalty
+            if not has_support:
+                if piece == 'P':
+                    score -= 15
+                else:
+                    score += 15
+    
+    return score
+"""===========================================================================EVALUATE CENTER CONTROL==========================================================================="""
+def evaluate_center_control():
+    center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+    extended_center = [(2, 2), (2, 3), (2, 4), (2, 5),
+                       (3, 2), (3, 5), (4, 2), (4, 5),
+                       (5, 2), (5, 3), (5, 4), (5, 5)]
+    
+    score = 0
+    for row, col in center_squares:
+        piece = board[row][col]
+        if piece != '.':
+            if piece.isupper():
+                score += 10
+            else:
+                score -= 10
+    
+    # Extended center
+    for row, col in extended_center:
+        piece = board[row][col]
+        if piece != '.':
+            if piece.isupper():
+                score += 5
+            else:
+                score -= 5
+    
+    return score
+"""===========================================================================EVALUATE ROOK ON OPEN FILE==========================================================================="""
+def evaluate_rook_on_open_file():
+    score = 0
+    
+    for col in range(8):
+        has_white_pawn = False
+        has_black_pawn = False
+        white_rook = False
+        black_rook = False
+        
+        for row in range(8):
+            piece = board[row][col]
+            if piece == 'P':
+                has_white_pawn = True
+            elif piece == 'p':
+                has_black_pawn = True
+            elif piece == 'R':
+                white_rook = True
+            elif piece == 'r':
+                black_rook = True
+        
+        # Open file (no pawns)
+        if not has_white_pawn and not has_black_pawn:
+            if white_rook:
+                score += 20
+            if black_rook:
+                score -= 20
+        # Semi-open file (only enemy pawns)
+        elif not has_white_pawn and white_rook:
+            score += 10
+        elif not has_black_pawn and black_rook:
+            score -= 10
+    
+    return score
 """===========================================================================SCORE MOVE==========================================================================="""
 def score_move(from_square , to_square):
     from_row, from_col = from_square
@@ -2170,7 +2344,7 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
                 return stored_score
 
     if depth == 0:
-        final_score = evaluate_board()
+        final_score =  quiescence_search(alpha , beta)
         transposition_table[pos_hash] = (depth, final_score, 'EXACT')
         return final_score
     
@@ -2304,6 +2478,72 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
             flag = 'EXACT'
         transposition_table[pos_hash] = (depth, min_eval, flag)
         return min_eval
+"""===========================================================================QUIESCENCE SEARCH==========================================================================="""
+def quiescence_search(alpha, beta, depth=0, max_depth=4):
+    # Prevent infinite loops
+    if depth >= max_depth:
+        return evaluate_board()
+    
+    # Stand pat score (if we don't take anything)
+    stand_pat = evaluate_board()
+    
+    # Beta cutoff
+    if stand_pat >= beta:
+        return beta
+    
+    # Update alpha
+    if alpha < stand_pat:
+        alpha = stand_pat
+    
+    # Get all capture moves only
+    all_moves = []
+    current_color = 'white' if depth % 2 == 0 else 'black'
+    
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece == '.':
+                continue
+            
+            piece_color = 'white' if piece.isupper() else 'black'
+            if piece_color != current_color:
+                continue
+            
+            moves = get_piece_moves(row, col)
+            for to_row, to_col in moves:
+                # Only consider captures
+                if board[to_row][to_col] != '.':
+                    all_moves.append(((row, col), (to_row, to_col)))
+    
+    # If no captures, return stand pat
+    if not all_moves:
+        return stand_pat
+    
+    # Try all captures
+    for from_square, to_square in all_moves:
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        
+        # Make move
+        captured = board[to_row][to_col]
+        piece = board[from_row][from_col]
+        board[to_row][to_col] = piece
+        board[from_row][from_col] = '.'
+        
+        # Recurse
+        score = -quiescence_search(-beta, -alpha, depth + 1, max_depth)
+        
+        # Undo move
+        board[from_row][from_col] = piece
+        board[to_row][to_col] = captured
+        
+        # Update alpha
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    
+    return alpha
 """===========================================================================GET BEST MOVE MINIMAX==========================================================================="""
 def get_best_move_minimax(color, depth=5):
     """Get best move using minimax algorithm."""
@@ -2541,10 +2781,7 @@ def reset_game():
     print("NEW GAME STARTED")
     print("Current turn: White")
     print("="*50 + "\n")
-#===========================================================================TERMINAL BOARD===========================================================================
-print("GAME STARTED")
-for row in board:
-    print(row)
+#===========================================================================ZORBIST TABLE===========================================================================
 # Initialize Zobrist table and record initial position for repetition tracking
 init_zobrist(seed=0)
 init_current_zobrist()
@@ -2773,7 +3010,6 @@ run = True
 clock = pygame.time.Clock()
 images_loaded = load_images()
 sounds_loaded = load_sounds()
-# Initialize check cache
 white_in_check_cached = is_in_check('white')
 black_in_check_cached = is_in_check('black')
 #===========================================================================GAME LOOP===========================================================================
