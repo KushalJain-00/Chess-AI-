@@ -10,7 +10,7 @@ pygame.init()
 board_width = 640
 panel_width = 250
 width = board_width + panel_width  # Total: 890px
-height = 640
+height = 720
 square_size = board_width // 8
 #===========================================================================COLORS===========================================================================
 Panel_bg = (45, 45, 45)
@@ -69,6 +69,9 @@ piece_moved = {
 captured_pieces = {'white': [], 'black': []}
 en_passant_target = None
 promotion_pending = None
+white_in_check_cached = False
+black_in_check_cached = False
+ai_is_thinking = False
 # Move replay/history tracking
 board_history = []  # List of board states at each move
 game_state_history = []  # List of (captured_pieces, en_passant_target, piece_moved) at each move
@@ -83,13 +86,13 @@ time_exceeded = None
 # Search control globals for iterative deepening / time-limited search
 search_start_time = None
 search_time_limit = None
-
 #===========================================================================ZOBRIST HASHING & MOVE HEURISTICS===========================================================================
 # Zobrist hashing: random 64-bit numbers for piece-square, castling, en-passant and side-to-move.
 ZOBRIST_PIECE = {}  # mapping piece_symbol -> list[64] of random ints
 ZOBRIST_CASTLING = [0] * 6
 ZOBRIST_EP = [0] * 8  # per file
 ZOBRIST_SIDE = 0
+
 # Current incremental Zobrist hash for the live board (keeps TT keys O(1) on make/undo)
 current_zobrist = None
 
@@ -297,7 +300,7 @@ def draw_board():
             piece = board[row][col]
             if piece.upper() == 'K':
                 piece_color = 'white' if piece.isupper() else 'black'
-                if is_in_check(piece_color):
+                if (piece_color == 'white' and white_in_check_cached) or (piece_color == 'black' and black_in_check_cached):
                     color = Check_color
 
             pygame.draw.rect(screen , color , (x , y , square_size , square_size))
@@ -857,7 +860,7 @@ def draw_captured_pieces_panel():
 def draw_game_info_panel():
     """Draw current game status"""
     info_x = board_width + 15
-    info_y = 490
+    info_y = 590
     info_width = 220
     
     # Background with border
@@ -905,6 +908,21 @@ def draw_game_info_panel():
     move_count_text = f"Total Moves: {len(move_history)}"
     move_surface = tiny_font.render(move_count_text, True, (180, 180, 180))
     screen.blit(move_surface, (info_x + 10, info_y + 95))
+
+    button_x = info_x
+    button_y = info_y + 70
+    button_width = 100
+    button_height = 35
+
+    new_game_rect = pygame.Rect(button_x , button_y , button_width , button_height)
+    pygame.draw.rect(screen , (60 , 130 , 60) , new_game_rect)
+    pygame.draw.rect(screen , White , new_game_rect , 2)
+
+    button_text = tiny_font.render("NEW GAME", True, White)
+    button_text_rect = button_text.get_rect(center=new_game_rect.center)
+    screen.blit(button_text, button_text_rect)
+
+    return new_game_rect
 """===========================================================================DRAW RIGHT PANEL==========================================================================="""
 def draw_right_panel():
     """Draw complete right panel with all components"""
@@ -920,7 +938,26 @@ def draw_right_panel():
         draw_clocks()
     draw_move_history()
     draw_captured_pieces_panel()
-    draw_game_info_panel()
+    new_game_button = draw_game_info_panel()
+
+    return new_game_button
+"""===========================================================================DRAW AI THINKING==========================================================================="""
+def draw_ai_thinking_overlay():
+    # Semi-transparent overlay
+    overlay = pygame.Surface((width , height))
+    overlay.set_alpha(180)
+    overlay.fill((0 , 0 , 0))
+    screen.blit(overlay , (0 , 0))
+    # Main message
+    thinking_text = large_font.render("AI THINKING...." , True , (255 , 200 , 0))
+    thinking_rect = thinking_text.get_rect(center = (width // 2 , height // 2 - 40))
+    screen.blit(thinking_text , thinking_rect)
+
+    #Animating dots
+    dots = "." * ((pygame.time.get_ticks() // 500) % 4)
+    dots_text = small_font.render(dots, True, (200, 200, 200))
+    dots_rect = dots_text.get_rect(center=(width // 2 + 80, height // 2 + 20))
+    screen.blit(dots_text, dots_rect)
 """===========================================================================COUNT MATERIAL==========================================================================="""
 def count_material(color):
     """Count material value for a color."""
@@ -946,7 +983,7 @@ def get_piece_name(piece):
         'b': 'Bishop', 'n': 'Knight', 'p': 'Pawn'
     }
     return names.get(piece, '')
-
+"""===========================================================================GET POSITION KEY==========================================================================="""
 def get_position_key():
     """Create a hashable key describing the current position for repetition detection."""
     # Use board rows, current turn, castling rights (from piece_moved), and en_passant_target
@@ -961,14 +998,14 @@ def get_position_key():
     )
     ep = en_passant_target if en_passant_target is None else (en_passant_target[0], en_passant_target[1])
     return (board_tuple, current_turn, castling, ep)
-
+"""===========================================================================THREEFOLD REPETITION==========================================================================="""
 def is_threefold_repetition():
     key = get_position_key()
     return position_history.get(key, 0) >= 3
-
+"""===========================================================================FIFTY MOVE RULE==========================================================================="""
 def is_fifty_move_rule():
     return halfmove_clock >= 100  # 100 halfmoves = 50 full moves
-
+"""===========================================================================INSUFFICIENT MATERIAL==========================================================================="""
 def is_insufficient_material():
     """Basic insufficient material detection.
     Covers: K vs K, K+N vs K, K+B vs K, and K+B vs K+B when bishops on same color is not handled precisely here.
@@ -989,7 +1026,7 @@ def is_insufficient_material():
 
     # More advanced cases (both sides only bishops) could be added later
     return False
-
+"""===========================================================================IS IN CHECK==========================================================================="""
 def is_in_check(color):
     king_pos = find_king(color)
     if not king_pos:
@@ -1009,7 +1046,7 @@ def is_in_check(color):
             if king_pos in moves:
                 return True
     return False
-
+"""===========================================================================IS STALEMATE==========================================================================="""
 def is_stalemate():
     # No legal moves for current player and not in check
     for r in range(8):
@@ -1024,7 +1061,7 @@ def is_stalemate():
             if get_valid_moves(r, c):
                 return False
     return not is_in_check(current_turn)
-
+"""===========================================================================CHECK DRAW CONDITIONS==========================================================================="""
 def check_draw_conditions():
     global game_over, game_result
     if is_threefold_repetition():
@@ -1075,6 +1112,7 @@ def is_enemy_piece(piece , player_color):
 """===========================================================================MOVE PIECE==========================================================================="""
 def move_piece(from_square , to_square):
     global en_passant_target , promotion_pending, _legal_moves_cache, transposition_table, halfmove_clock, position_history, current_zobrist
+    global white_in_check_cached, black_in_check_cached
 
     from_row,from_col = from_square
     to_row,to_col = to_square
@@ -1210,6 +1248,13 @@ def move_piece(from_square , to_square):
 
     # Check draw conditions (threefold, 50-move, insufficient material, stalemate)
     check_draw_conditions()
+    # Update check cache
+    white_in_check_cached = is_in_check('white')
+    black_in_check_cached = is_in_check('black')
+    
+    # Update evaluation
+    current_evaluation = evaluate_board() / 100
+    evaluation_history.append(current_evaluation)
 
     return True
 """===========================================================================PIECE IS ON BOARD==========================================================================="""
@@ -1474,6 +1519,7 @@ def update_pieces_moved(piece , from_row , from_col):
             piece_moved['black_rook_a'] = True
         elif from_row == 0 and from_col == 7:
             piece_moved['black_rook_h'] = True
+"""===========================================================================IS SQUARE ATTACKED==========================================================================="""
 def is_square_attacked(row, col, by_color):
     """Optimized check if a square is attacked by a color."""
     # Check pawn attacks (simple early exit)
@@ -1591,7 +1637,6 @@ def get_valid_moves(row , col):
 # Cache for legal moves to avoid recalculating
 _legal_moves_cache = {}
 _cache_board_hash = None
-
 def get_all_legal_moves(color):
     global _legal_moves_cache, _cache_board_hash
     
@@ -1691,7 +1736,7 @@ def switch_turn():
         print(f"{current_turn.capitalize()}'s turn")
     
     print()
-
+"""===========================================================================EVALUATE BOARD==========================================================================="""
 def evaluate_board():
     """Evaluate current position. Positive = good for white."""
     score = 0
@@ -1734,7 +1779,7 @@ def score_move(from_square , to_square):
         score += 1
     return score
 """===========================================================================ORDERED MOVE==========================================================================="""
-def get_ordered_move(color, depth=0):
+def get_ordered_move(color, depth=3):
     """Return moves ordered by heuristic score.
 
     Uses MVV-LVA base score (`score_move`) plus history heuristic and killer move bonuses to
@@ -2136,11 +2181,104 @@ def minimax(depth, is_maximizing, alpha=float('-inf'), beta=float('inf')):
         transposition_table[pos_hash] = (depth, min_eval, flag)
         return min_eval
 """===========================================================================GET BEST MOVE MINIMAX==========================================================================="""
-def get_best_move_minimax(color, depth=3):
+def get_best_move_minimax(color, depth=5):
     """Get best move using minimax algorithm."""
     # Use minimax_root for consistent alpha-beta search
     move, score = minimax_root(color, depth)
     return move
+"""===========================================================================RESET GAME==========================================================================="""
+def reset_game():
+    """Reset all game state to start a new game."""
+    global board, selected_square, current_turn, move_history, valid_moves
+    global game_over, game_result, piece_moved, en_passant_target, promotion_pending
+    global captured_pieces, animating_move, evaluation_history, current_evaluation
+    global white_in_check_cached, black_in_check_cached
+    global board_history, game_state_history, current_move_index
+    global position_history, halfmove_clock, transposition_table, pv_table
+    global history_score, killer_moves
+    global white_time_remaining, black_time_remaining, last_time_update, time_exceeded
+    
+    print("\n" + "="*50)
+    print("RESETTING GAME...")
+    print("="*50)
+    
+    # Reset board
+    board = [
+        ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+        ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+        ['.', '.', '.', '.', '.', '.', '.', '.'],
+        ['.', '.', '.', '.', '.', '.', '.', '.'],
+        ['.', '.', '.', '.', '.', '.', '.', '.'],
+        ['.', '.', '.', '.', '.', '.', '.', '.'],
+        ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+        ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+    ]
+    
+    # Reset game state
+    selected_square = None
+    current_turn = 'white'
+    move_history = []
+    valid_moves = []
+    game_over = False
+    game_result = ""
+    
+    # Reset special moves
+    piece_moved = {
+        'white_king': False,
+        'white_rook_a': False,
+        'white_rook_h': False,
+        'black_king': False,
+        'black_rook_a': False,
+        'black_rook_h': False,
+    }
+    en_passant_target = None
+    promotion_pending = None
+    
+    # Reset captured pieces
+    captured_pieces = {'white': [], 'black': []}
+    
+    # Reset animation
+    animating_move = None
+    
+    # Reset evaluation
+    evaluation_history = []
+    current_evaluation = 0
+    
+    # Reset check cache
+    white_in_check_cached = False
+    black_in_check_cached = False
+    
+    # Reset history/replay
+    board_history = []
+    game_state_history = []
+    current_move_index = -1
+    
+    # Reset draw conditions
+    position_history = {}
+    halfmove_clock = 0
+    
+    # Reset AI tables
+    transposition_table = {}
+    pv_table = {}
+    history_score = {}
+    killer_moves = {}
+    
+    # Reset time controls
+    if time_control:
+        white_time_remaining = time_control['time']
+        black_time_remaining = time_control['time']
+        last_time_update = None
+        time_exceeded = None
+    
+    # Reinitialize zobrist if you're using it
+    try:
+        init_current_zobrist()
+    except:
+        pass
+    
+    print("NEW GAME STARTED")
+    print("Current turn: White")
+    print("="*50 + "\n")
 #===========================================================================TERMINAL BOARD===========================================================================
 print("GAME STARTED")
 for row in board:
@@ -2356,7 +2494,6 @@ def select_time_control():
             screen.blit(ten_desc_surface, ten_desc_rect)
         
         pygame.display.flip()
-
 #===========================================================================TERMINAL BOARD===========================================================================
 print("GAME STARTED")
 for row in board:
@@ -2364,19 +2501,17 @@ for row in board:
 #===========================================================================MAIN GAME LOOP===========================================================================
 # First, show game mode selection
 select_game_mode()
-
 print(f"Game mode selected: {game_mode}")
-
 # If two-player mode, show time control selection
 if game_mode == 'two_player':
     select_time_control()
     print(f"Time control selected: {time_control}")
-
+"""===========================================================================FORMAT TIME==========================================================================="""
 def format_time(seconds):
     mins = int(seconds) // 60
     secs = int(seconds) % 60
     return f"{mins}:{secs:02d}"
-
+"""===========================================================================UPDATE CLOCKS==========================================================================="""
 def update_clocks():
     global white_time_remaining, black_time_remaining, last_time_update, current_turn, time_exceeded, game_over, game_result
     
@@ -2405,7 +2540,7 @@ def update_clocks():
             time_exceeded = 'black'
             game_over = True
             game_result = "White won! Black's time expired."
-
+"""===========================================================================DRAW CLOCKS==========================================================================="""
 def draw_clocks():
     if time_control == 'no_clock':
         return
@@ -2433,10 +2568,14 @@ def draw_clocks():
     black_time_surface = small_font.render(black_time_text, True, (255, 255, 100) if current_turn == 'black' else (200, 200, 200))
     black_time_rect = black_time_surface.get_rect(center=(clock_x + clock_width // 2, black_clock_y + clock_height // 2))
     screen.blit(black_time_surface, black_time_rect)
-
+"""===========================================================================SETUP==========================================================================="""
 run = True
 clock = pygame.time.Clock()
 images_loaded = load_images()
+# Initialize check cache
+white_in_check_cached = is_in_check('white')
+black_in_check_cached = is_in_check('black')
+#===========================================================================GAME LOOP===========================================================================
 while run:
     
     # Update hover effect
@@ -2491,6 +2630,10 @@ while run:
             continue
 
         if event.type == pygame.MOUSEBUTTONDOWN:
+
+            if new_game_button_rect and new_game_button_rect.collidepoint(event.pos):
+                reset_game()
+                continue
 
             if game_over:
                 run = False
@@ -2581,7 +2724,14 @@ while run:
         
         # AI's turn - only in AI mode and only after animation completes
         if game_mode == 'ai' and current_turn == 'black' and not animating_move:
+            ai_is_thinking = True
+            draw_board()
+            draw_pieces()
+            draw_right_panel()
+            draw_ai_thinking_overlay()
+            pygame.display.flip()
             move = get_best_move_minimax('black')
+            ai_is_thinking = False
             if move:
                 from_square, to_square = move
                 move_piece(from_square, to_square)
@@ -2590,8 +2740,7 @@ while run:
 
     draw_board()
     draw_pieces()
-    # draw_info()
-    draw_right_panel()
+    new_game_button_rect = draw_right_panel()
     if game_mode == 'two_player':
         draw_clocks()
     draw_game_over()
