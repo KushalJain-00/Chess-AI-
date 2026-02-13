@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Game saves (if implementing save feature)
+saves/
+*.sav
+*.pgn
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Screenshots (keep organized folder but ignore random screenshots)
+screenshot*.png
+
+# Cache
+.cache/
+*.cache
+
+# Distribution
+dist/
+build/
+*.spec
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation builds
+docs/_build/

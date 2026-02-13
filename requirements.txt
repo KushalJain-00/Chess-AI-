@@ -1,0 +1,15 @@
+# Chess AI - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core game engine
+pygame>=2.5.0
+
+# Performance and data handling
+numpy>=1.24.0
+
+# Optional but recommended for future ML features
+# Uncomment when implementing neural network AI:
+# tensorflow>=2.10.0
+# python-chess>=1.9.0
+# scipy>=1.9.0
+# matplotlib>=3.5.0
